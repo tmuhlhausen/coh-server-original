@@ -237,6 +237,9 @@
     <ClCompile Include="utils\StringUtil.c">
       <Filter>utils</Filter>
     </ClCompile>
+    <ClCompile Include="utils\safe_str.c">
+      <Filter>utils</Filter>
+    </ClCompile>
     <ClCompile Include="utils\structDefines.c">
       <Filter>utils</Filter>
     </ClCompile>
@@ -748,6 +751,9 @@
     <ClInclude Include="utils\StringUtil.h">
       <Filter>utils</Filter>
     </ClInclude>
+    <ClInclude Include="utils\safe_str.h">
+      <Filter>utils</Filter>
+    </ClInclude>
     <ClInclude Include="utils\structDefines.h">
       <Filter>utils</Filter>
     </ClInclude>
@@ -767,6 +773,9 @@
       <Filter>utils</Filter>
     </ClInclude>
     <ClInclude Include="utils\SuperAssert.h">
+      <Filter>utils</Filter>
+    </ClInclude>
+    <ClInclude Include="utils\unsafe_api_ban.h">
       <Filter>utils</Filter>
     </ClInclude>
     <ClInclude Include="utils\sysutil.h">

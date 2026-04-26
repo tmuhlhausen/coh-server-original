@@ -67,6 +67,7 @@
 #include "turnstiledb.h"
 #include "missionservercomm.h"	//for reset mission server link console
 #include "queueservercomm.h"
+#include "safe_str.h"
 #include "../Common/ClientLogin/clientcommlogin.h"
 #include "dbEventHistory.h"
 #include "log.h"
@@ -479,7 +480,7 @@ int registerDbClient(Packet *pak,NetLink *link)
 	tcp_port	= pktGetBitsPack(pak,1);
 	static_link	= pktGetBitsPack(pak,1);
 	cookie		= pktGetBitsPack(pak,1);
-	strcpy(patch_version, pktGetString(pak));
+	pkt_string_copy_checked(patch_version, sizeof(patch_version), pak);
 
 	if (map_id < 0) // mainly used by mapservers running in 'localmapserver' (editing) mode
 	{
@@ -545,11 +546,11 @@ int registerDbClient(Packet *pak,NetLink *link)
 	container->link			= link;
 	container->active		= 1;
 	container->starting		= 1;
-	strcpy(container->patch_version, patch_version);
+	copy_checked(container->patch_version, sizeof(container->patch_version), patch_version);
 	static_map_ids[0] = container->id;
 	containerSendList(map_list,static_map_ids,static_map_count,0,link,0);
-	strcpy(ipbuf1,makeIpStr(container->ip_list[0]));
-	strcpy(ipbuf2,makeIpStr(container->ip_list[1]));
+	copy_checked(ipbuf1, sizeof(ipbuf1), makeIpStr(container->ip_list[0]));
+	copy_checked(ipbuf2, sizeof(ipbuf2), makeIpStr(container->ip_list[1]));
 	container->on_since = timerSecondsSince2000();
 	container->lastRecvTime = timerCpuSeconds();
 	return container->id;
