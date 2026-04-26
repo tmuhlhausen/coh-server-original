@@ -29,6 +29,7 @@ namespace
     static const unsigned char kAlgorithmAes256Gcm = 1;
     static const unsigned char kNonceLength = 12;
     static const unsigned char kTagLength = 16;
+    static const size_t kHeaderPrefixLength = sizeof(kMagic) + 4;
 
     struct ScopedEvpCipherCtx
     {
@@ -39,6 +40,8 @@ namespace
 
     bool CryptAes256Gcm(const std::vector<unsigned char> &key,
                         const unsigned char *nonce,
+                        const unsigned char *aad,
+                        const size_t aadLength,
                         const std::vector<unsigned char> &input,
                         std::vector<unsigned char> &output,
                         unsigned char *tag,
@@ -54,6 +57,12 @@ namespace
             return false;
         if (EVP_CipherInit_ex(ctx.m_ctx, 0, 0, &key[0], nonce, -1) != 1)
             return false;
+        if (aad && aadLength > 0)
+        {
+            int aadLen = 0;
+            if (EVP_CipherUpdate(ctx.m_ctx, 0, &aadLen, aad, (int)aadLength) != 1)
+                return false;
+        }
 
         output.resize(input.size());
         int outLen = 0;
@@ -170,7 +179,7 @@ errResult stoFileCryptFile::InitializeReadBuffer()
     m_readBuffer.clear();
     m_isNewFormat = false;
 
-    const size_t minHeaderSize = sizeof(kMagic) + 4;
+    const size_t minHeaderSize = kHeaderPrefixLength;
     if (encrypted.size() >= minHeaderSize && std::memcmp(&encrypted[0], kMagic, sizeof(kMagic)) == 0)
     {
         const unsigned char version = encrypted[4];
@@ -192,7 +201,7 @@ errResult stoFileCryptFile::InitializeReadBuffer()
         unsigned char mutableTag[kTagLength];
         std::memcpy(mutableTag, tag, kTagLength);
 
-        if (!CryptAes256Gcm(m_key, nonce, ciphertext, m_readBuffer, mutableTag, false))
+        if (!CryptAes256Gcm(m_key, nonce, &encrypted[0], minHeaderSize, ciphertext, m_readBuffer, mutableTag, false))
             return ER_Failure;
 
         m_isNewFormat = true;
@@ -232,17 +241,16 @@ errResult stoFileCryptFile::FinalizeWriteBuffer()
 
     std::vector<unsigned char> ciphertext;
     unsigned char tag[kTagLength] = { 0 };
-    if (!CryptAes256Gcm(m_key, nonce, m_writeBuffer, ciphertext, tag, true))
-        return ER_Failure;
-
     std::vector<unsigned char> output;
-    output.reserve(sizeof(kMagic) + 4 + kNonceLength + ciphertext.size() + kTagLength);
+    output.reserve(sizeof(kMagic) + 4 + kNonceLength + m_writeBuffer.size() + kTagLength);
     output.insert(output.end(), kMagic, kMagic + sizeof(kMagic));
     output.push_back(kHeaderVersion);
     output.push_back(kAlgorithmAes256Gcm);
     output.push_back(kNonceLength);
     output.push_back(kTagLength);
     output.insert(output.end(), nonce, nonce + kNonceLength);
+    if (!CryptAes256Gcm(m_key, nonce, &output[0], kHeaderPrefixLength, m_writeBuffer, ciphertext, tag, true))
+        return ER_Failure;
     output.insert(output.end(), ciphertext.begin(), ciphertext.end());
     output.insert(output.end(), tag, tag + kTagLength);
 
