@@ -1,5 +1,8 @@
 #include <assert.h>
+#include <ctype.h>
 #include <process.h>
+#include <stdlib.h>
+#include <string.h>
 #include "netio.h"
 #include "netio_send.h"
 #include "error.h"
@@ -89,6 +92,7 @@ DBCommState db_state = {-1,1};
 bool disconnected_from_dbserver=false; // Set to true when we manually disconnect to prevent sending of delink messages after we have disconnected
 int num_relay_cmds=0;
 bool log_relay_cmds=false;
+static int s_relay_cmd_hardening_enforced = -1;
 
 #if defined(SERVER) && !defined(DBQUERY) // auction on mapservers only
 	static void cacheAccountServerCatalogUpdate( Packet* pak_in );
@@ -487,12 +491,253 @@ void relayCommandLogToggle(void)
 		printf("Not logging relay commands\n");
 }
 
+typedef enum RelayArgType
+{
+	RELAY_ARG_NONE,
+	RELAY_ARG_INT,
+} RelayArgType;
+
+typedef struct RelayCmdValidationSpec
+{
+	const char* verb;
+	int minArgs;
+	int maxArgs;
+	RelayArgType argTypes[3];
+	int requiresPayload;
+} RelayCmdValidationSpec;
+
+static const RelayCmdValidationSpec s_relayCmdAllowList[] =
+{
+	{ "silenceall", 1, 1, { RELAY_ARG_INT }, 0 },
+	{ "cmdrelay", 0, 0, { RELAY_ARG_NONE }, 1 },
+	{ "server_sgstat_cmd", 1, 1, { RELAY_ARG_INT }, 1 },
+	{ "cmdrelay_dbid", 1, 2, { RELAY_ARG_INT, RELAY_ARG_INT }, 1 },
+	{ "cmdrelay_db_no_ent", 0, 0, { RELAY_ARG_NONE }, 1 },
+};
+
+static int relayHardeningEnabled(void)
+{
+	if (s_relay_cmd_hardening_enforced < 0)
+	{
+		const char* env = getenv("COH_RELAY_CMD_HARDENING_ENFORCE");
+		s_relay_cmd_hardening_enforced = (!env || atoi(env) != 0) ? 1 : 0;
+	}
+	return s_relay_cmd_hardening_enforced;
+}
+
+static int relayIsIntegerArg(const char *arg)
+{
+	const unsigned char* cursor = (const unsigned char*)arg;
+	if (!cursor || !*cursor)
+		return 0;
+	if (*cursor == '+' || *cursor == '-')
+		++cursor;
+	if (!*cursor)
+		return 0;
+	while (*cursor)
+	{
+		if (!isdigit(*cursor))
+			return 0;
+		++cursor;
+	}
+	return 1;
+}
+
+static void relayMakeLogPayloadPreview(const char *msg, char *out, size_t out_size)
+{
+	size_t i = 0;
+	const unsigned char *cursor = (const unsigned char*)msg;
+
+	if (!out || out_size == 0)
+		return;
+
+	while (cursor && *cursor && i + 1 < out_size)
+	{
+		unsigned char c = *cursor++;
+		if (c == '\n')
+		{
+			if (i + 2 >= out_size)
+				break;
+			out[i++] = '\\';
+			out[i++] = 'n';
+		}
+		else if (c == '\r')
+		{
+			if (i + 2 >= out_size)
+				break;
+			out[i++] = '\\';
+			out[i++] = 'r';
+		}
+		else if (isprint(c))
+		{
+			out[i++] = (char)c;
+		}
+		else
+		{
+			if (i + 4 >= out_size)
+				break;
+			out[i++] = '\\';
+			out[i++] = 'x';
+			out[i++] = "0123456789ABCDEF"[(c >> 4) & 0xF];
+			out[i++] = "0123456789ABCDEF"[c & 0xF];
+		}
+	}
+	out[i] = 0;
+}
+
+static void relayLogRejected(const char *reason, const char *msg, int hardeningEnabled)
+{
+	char preview[256];
+	relayMakeLogPayloadPreview(msg ? msg : "<null>", preview, ARRAY_SIZE(preview));
+	LOG_OLD("relaycmd_security event=reject reason=%s hardening_enforced=%d preview=\"%s\"",
+		reason ? reason : "unknown",
+		hardeningEnabled,
+		preview);
+}
+
+static int relayHasInvalidControlChars(const char *msg)
+{
+	const unsigned char *cursor = (const unsigned char*)msg;
+	while (cursor && *cursor)
+	{
+		unsigned char c = *cursor++;
+		if (c < 32 && c != '\n' && c != '\t')
+			return 1;
+	}
+	return 0;
+}
+
+static const RelayCmdValidationSpec* relayFindValidationSpec(const char *verb)
+{
+	int i;
+	for (i = 0; i < ARRAY_SIZE(s_relayCmdAllowList); ++i)
+	{
+		if (stricmp(verb, s_relayCmdAllowList[i].verb) == 0)
+			return &s_relayCmdAllowList[i];
+	}
+	return NULL;
+}
+
+static int relayValidateTopLevelSyntax(const char *msg, char **reasonOut)
+{
+	const char *newline;
+	const char *secondNewline;
+
+	if (!msg || !msg[0])
+	{
+		*reasonOut = "empty_payload";
+		return 0;
+	}
+
+	if (relayHasInvalidControlChars(msg))
+	{
+		*reasonOut = "invalid_control_char";
+		return 0;
+	}
+
+	if (strchr(msg, '\r'))
+	{
+		*reasonOut = "carriage_return_rejected";
+		return 0;
+	}
+
+	newline = strchr(msg, '\n');
+	secondNewline = newline ? strchr(newline + 1, '\n') : NULL;
+	if (secondNewline)
+	{
+		*reasonOut = "multiple_newlines_rejected";
+		return 0;
+	}
+
+	if (strstr(msg, "&&") || strstr(msg, "||") || strchr(msg, ';'))
+	{
+		*reasonOut = "command_delimiter_rejected";
+		return 0;
+	}
+
+	return 1;
+}
+
+static int relayValidateCommand(const char *msg, char **reasonOut)
+{
+	char *msgCopy;
+	char *line2 = 0;
+	char *args[16] = {0};
+	int argCount;
+	int i;
+	const RelayCmdValidationSpec *spec;
+
+	if (!relayValidateTopLevelSyntax(msg, reasonOut))
+		return 0;
+
+	msgCopy = strdup(msg);
+	if (!msgCopy)
+	{
+		*reasonOut = "alloc_failure";
+		return 0;
+	}
+
+	argCount = tokenize_line(msgCopy, args, &line2);
+	if (argCount <= 0 || !args[0] || !args[0][0])
+	{
+		free(msgCopy);
+		*reasonOut = "missing_verb";
+		return 0;
+	}
+
+	spec = relayFindValidationSpec(args[0]);
+	if (!spec)
+	{
+		free(msgCopy);
+		*reasonOut = "verb_not_allowlisted";
+		return 0;
+	}
+
+	if ((argCount - 1) < spec->minArgs || (argCount - 1) > spec->maxArgs)
+	{
+		free(msgCopy);
+		*reasonOut = "arg_count_invalid";
+		return 0;
+	}
+
+	for (i = 0; i < (argCount - 1); ++i)
+	{
+		if (spec->argTypes[i] == RELAY_ARG_INT && !relayIsIntegerArg(args[i + 1]))
+		{
+			free(msgCopy);
+			*reasonOut = "arg_type_invalid";
+			return 0;
+		}
+	}
+
+	if (spec->requiresPayload && (!line2 || !line2[0]))
+	{
+		free(msgCopy);
+		*reasonOut = "missing_payload";
+		return 0;
+	}
+
+	free(msgCopy);
+	return 1;
+}
+
 void handleRelayCmd(Packet *pak)
 {
+	char *rejectReason = 0;
+	int hardeningEnabled = relayHardeningEnabled();
 	char *msg = pktGetString(pak);
+
 	num_relay_cmds++;
 	//if (log_relay_cmds) // uncomment this once I've debugged the command that causing the crash
 		LOG_OLD("relaycmds - %s", msg);
+
+	if (!relayValidateCommand(msg, &rejectReason))
+	{
+		relayLogRejected(rejectReason, msg, hardeningEnabled);
+		if (hardeningEnabled)
+			return;
+	}
+
 	cmdOldServerHandleRelay(msg);
 }
 
