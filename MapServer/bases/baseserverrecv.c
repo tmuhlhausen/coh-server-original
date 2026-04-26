@@ -796,12 +796,18 @@ int baseReceiveEdit(Packet *pak,Entity *e)
 		for(i=0;i<count;i++)
 		{
 			char	name[128];
+			const char *src;
 
 			detail.id = pktGetBitsPack(pak,1);
 			detail.invID = pktGetBitsPack(pak,1);
 			detail.permissions = pktGetBitsPack(pak,1);
 			getMat4(pak,detail.mat);
-			strcpy(name,pktGetString(pak));
+			src = pktGetString(pak);
+			if (strcpy_s(name, sizeof(name), src) != 0)
+			{
+				baseEditFailed(e, "InvalidDetailName");
+				continue;
+			}
 
 			detail.info = basedata_GetDetailByName(name);
 
@@ -1389,6 +1395,7 @@ int baseReceiveEdit(Packet *pak,Entity *e)
 		RoomDetail	detail = {0};
 		BaseRoom	*room;
 		char		name[128];
+		const char *src;
 
 		room_id = pktGetBitsPack(pak,1);
 		room = baseGetRoom(&g_base,room_id);
@@ -1400,7 +1407,12 @@ int baseReceiveEdit(Packet *pak,Entity *e)
 
 		detail.id = pktGetBitsPack(pak,1);
 		detail.permissions = pktGetBitsPack(pak,1);
-		strcpy(name,pktGetString(pak));
+		src = pktGetString(pak);
+		if (strcpy_s(name, sizeof(name), src) != 0)
+		{
+			baseEditFailed(e, "InvalidDetailName");
+			break;
+		}
 
 		if (!(sgroup_hasPermission(e, SG_PERM_RANKS)))
 		{
