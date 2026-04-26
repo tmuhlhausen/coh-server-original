@@ -290,6 +290,7 @@ static void crRestoreCharacter(DeletionHeader *header)
 	char inputLine[100];
 	char *filename = "C:/restoretemp.txt";
 	FILE *f;
+	char *unescapedData;
 
 	printf("\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n");
 	consoleSetColor(COLOR_GREEN|COLOR_BRIGHT, 0);
@@ -306,10 +307,28 @@ static void crRestoreCharacter(DeletionHeader *header)
 	f = fopen(filename, "wt");
 	if (f)
 	{
-		fprintf(f, unescapeString(header->data));
-		fclose(f);
+		unescapedData = unescapeString(header->data);
+		if (!unescapedData)
+		{
+			consoleSetColor(COLOR_RED|COLOR_BRIGHT, 0);
+			printf("Error unescaping character data.\n");
+			consoleSetColor(COLOR_RED|COLOR_GREEN|COLOR_BLUE|COLOR_BRIGHT, 0);
+			ret = 1;
+		}
+		else
+		{
+			if (fputs(unescapedData, f) == EOF || ferror(f))
+			{
+				consoleSetColor(COLOR_RED|COLOR_BRIGHT, 0);
+				printf("Error writing restore file '%s'.\n", filename);
+				consoleSetColor(COLOR_RED|COLOR_GREEN|COLOR_BLUE|COLOR_BRIGHT, 0);
+				ret = 1;
+			}
+			else
+				ret = dbQueryPutCharacter(filename);
+		}
 
-		ret = dbQueryPutCharacter(filename);
+		fclose(f);
 	}
 	else
 		ret = 1;
