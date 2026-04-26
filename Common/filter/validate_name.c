@@ -221,6 +221,33 @@ bool wcharKoreanFilter( wchar_t ch) {
 	return false;
 }
 
+bool ValidateCommandSafePlayerName(const char *pchName, int max_length)
+{
+	int i;
+
+	if (!pchName || !pchName[0])
+	{
+		return false;
+	}
+
+	for (i = 0; pchName[i]; ++i)
+	{
+		unsigned char ch = (unsigned char)pchName[i];
+
+		if (i >= max_length)
+		{
+			return false;
+		}
+
+		if (ch < 32 || ch == '"' || ch == '\\' || ch == ';' || ch == ',' || ch == '|')
+		{
+			return false;
+		}
+	}
+
+	return true;
+}
+
 static bool utf8KoreanFilter( const char *str )
 {
 	return wcharKoreanFilter(UTF8ToWideCharConvert(str));

@@ -94,6 +94,7 @@
 #include "character_net.h"
 #include "scriptengine.h"
 #include "cmdserver.h"
+#include "cmdservercsr.h"
 #include "group.h"
 #include "baseserverrecv.h"
 #include "Invention.h"
@@ -183,6 +184,21 @@ int getIdxFromCookie( int ent_idx_cookie )
 			return i;
 
 	return -1;
+}
+
+int parseClientInput_IsValidPromoteTargetName(Entity *promoter, const char *target_name)
+{
+	if (!promoter || !target_name)
+	{
+		return false;
+	}
+
+	if (ValidateName(target_name, promoter->auth_name, true, MAX_PLAYER_NAME_LEN(promoter)) != VNR_Valid)
+	{
+		return false;
+	}
+
+	return ValidateCommandSafePlayerName(target_name, MAX_PLAYER_NAME_LEN(promoter));
 }
 
 
@@ -3629,12 +3645,32 @@ int parseClientInput( Packet *pak, ClientLink *client )
 			xcase CLIENTINP_DO_PROMOTE:
 			{
 				char promotedPlayerName[64];
-				char buf[128];
 				strncpyt(promotedPlayerName, pktGetString(pak), sizeof(promotedPlayerName));
-				if(e)
+				if (e)
 				{
-					sprintf( buf, "promote_long %i %i %i %i \"%s\"", e->supergroup_id, sgroup_rank(e, e->db_id), 1, e->db_id, promotedPlayerName);
-					serverParseClient( buf, NULL );
+					int result = 0;
+					char relay_cmd[256];
+					Entity *ent;
+
+					if (!parseClientInput_IsValidPromoteTargetName(e, promotedPlayerName))
+					{
+						chatSendToPlayer(e->db_id, localizedPrintf(e, "IncorrectParameter"), INFO_USER_ERROR, 0);
+						break;
+					}
+
+					sprintf(relay_cmd, "promote_long %i %i %i %i \"%s\"",
+						e->supergroup_id, sgroup_rank(e, e->db_id), 1, e->db_id, escapeString(promotedPlayerName));
+					ent = findEntOrRelay(client, promotedPlayerName, relay_cmd, &result);
+
+					if (ent)
+					{
+						sgroup_promote(ent, e->db_id, e->supergroup_id, sgroup_rank(e, e->db_id), 1);
+					}
+					else if (!result)
+					{
+						chatSendToPlayer(e->db_id, localizedPrintf(e, "CouldNotActionPlayerReason", "ChangeRankString", promotedPlayerName, "PlayerIsNotOnline"),
+							INFO_USER_ERROR, 0);
+					}
 				}
 			}
 			xcase CLIENTINP_REQUEST_SG_PERMISSIONS:

@@ -28,6 +28,7 @@ int isInvalidFilename(char *str);
 int characterFilter( char ch );
 bool wcharFilter( wchar_t ch );
 bool wcharKoreanFilter( wchar_t ch);
+bool ValidateCommandSafePlayerName(const char *pchName, int max_length);
 
 int NonAsciiChars(const char * str );
 int NonKoreanChars(const char * str );

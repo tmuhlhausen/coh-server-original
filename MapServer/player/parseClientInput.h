@@ -14,6 +14,7 @@ void setInitialPosition(Entity *e, int new_character);
 int resumeCharacter(ClientLink* client, int ent_idx_cookie);
 const char* getClientInpCmdName(int cmd);
 int MapCheckDisallowedPlayer(Entity *player);
+int parseClientInput_IsValidPromoteTargetName(Entity *promoter, const char *target_name);
 
 // End mkproto
 #endif
