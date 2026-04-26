@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <process.h>
 #include <time.h>
+#include <errno.h>
 #include "utils.h"
 #include "EArray.h"
 #include "sock.h"
@@ -40,6 +41,50 @@ static void crErrorMessage(const char *msg)
 	printf("\n%s\n", msg);
 	consoleSetColor(COLOR_RED|COLOR_GREEN|COLOR_BLUE|COLOR_BRIGHT, 0);
 	getch();
+}
+
+static int readLine(char* buf, size_t len)
+{
+	size_t inputLen;
+
+	if (!buf || len == 0)
+		return 0;
+
+	if (!fgets(buf, len, stdin))
+	{
+		buf[0] = 0;
+		return 0;
+	}
+
+	inputLen = strlen(buf);
+	if (inputLen > 0 && buf[inputLen - 1] == '\n')
+		buf[inputLen - 1] = 0;
+	else
+	{
+		int c;
+		while ((c = fgetc(stdin)) != '\n' && c != EOF) { }
+	}
+
+	return 1;
+}
+
+static int parseIntInRange(const char *str, int minValue, int maxValue, int *outValue)
+{
+	char *endPtr;
+	long parsed;
+
+	if (!str || !outValue || str[0] == 0)
+		return 0;
+
+	errno = 0;
+	parsed = strtol(str, &endPtr, 10);
+	if (errno != 0 || *endPtr != 0)
+		return 0;
+	if (parsed < minValue || parsed > maxValue)
+		return 0;
+
+	*outValue = (int)parsed;
+	return 1;
 }
 
 
@@ -253,7 +298,7 @@ static void crRestoreCharacter(DeletionHeader *header)
 	printf("\n\n\n\n");
 
 	printf("Enter the IP address of the destination DBServer (none to cancel): ");
-	gets(inputLine);
+	readLine(inputLine, sizeof(inputLine));
 
 	if (inputLine[0] == 0)
 		return;
@@ -320,7 +365,7 @@ static void crHandleFindResults(DeletionHeader **results)
 
 		printf("\n\nX. Exit\nP. Previous Page\nN. Next Page\n");
 		printf("\n\nEnter selection: ");
-		gets(inputLine);
+		readLine(inputLine, sizeof(inputLine));
 
 		if (stricmp(inputLine, "p")==0)
 		{
@@ -406,7 +451,7 @@ static DeletionLog *crOpenDeletionLog()
 	consoleSetColor(COLOR_RED|COLOR_GREEN|COLOR_BLUE|COLOR_BRIGHT, 0);
 //	printf("---- Open ----------------------------------------------\n");
 	printf("\n\nEnter deletion log filename (none to cancel): ");
-	gets(inputLine);
+	readLine(inputLine, sizeof(inputLine));
 	if (inputLine[0] == 0)
 		return NULL;
 
@@ -425,7 +470,7 @@ static void crFindByAccount(DeletionLog *log)
 	consoleSetColor(COLOR_RED|COLOR_GREEN|COLOR_BLUE|COLOR_BRIGHT, 0);
 //	printf("---- Find ----------------------------------------------\n");
 	printf("\n\nEnter full or partial auth name (none to cancel): ");
-	gets(inputLine);
+	readLine(inputLine, sizeof(inputLine));
 	if (inputLine[0] == 0)
 		return;
 
@@ -455,7 +500,7 @@ static void crFindByCharacter(DeletionLog *log)
 	consoleSetColor(COLOR_RED|COLOR_GREEN|COLOR_BLUE|COLOR_BRIGHT, 0);
 //	printf("---- Find ----------------------------------------------\n");
 	printf("\n\nEnter full or partial character name (none to cancel): ");
-	gets(inputLine);
+	readLine(inputLine, sizeof(inputLine));
 	if (inputLine[0] == 0)
 		return;
 
@@ -485,7 +530,7 @@ static void crFindByIP(DeletionLog *log)
 	consoleSetColor(COLOR_RED|COLOR_GREEN|COLOR_BLUE|COLOR_BRIGHT, 0);
 //	printf("---- Find ----------------------------------------------\n");
 	printf("\n\nEnter full or partial ip address (none to cancel): ");
-	gets(inputLine);
+	readLine(inputLine, sizeof(inputLine));
 	if (inputLine[0] == 0)
 		return;
 
@@ -503,15 +548,6 @@ static void crFindByIP(DeletionLog *log)
 	eaDestroy(&results);
 }
 
-static int myClamp(int in, int low, int high)
-{
-	if (in < low)
-		return low;
-	if (in > high)
-		return high;
-	return in;
-}
-
 static void crFindByDate(DeletionLog *log)
 {
 	char inputLine[100];
@@ -519,6 +555,7 @@ static void crFindByDate(DeletionLog *log)
 	int i, size;
 	struct tm a, b;
 	U32 minTime, maxTime, recordTime;
+	int parsed;
 
 	if (!log)
 		return;
@@ -527,37 +564,67 @@ static void crFindByDate(DeletionLog *log)
 //	printf("---- Find ----------------------------------------------\n");
 
 	printf("\n\nEnter min year: ");
-	a.tm_year = atoi(gets(inputLine)) - 1900;
+	readLine(inputLine, sizeof(inputLine));
+	if (!parseIntInRange(inputLine, 1900, 9999, &parsed))
+		return;
+	a.tm_year = parsed - 1900;
 	
 	printf("\nEnter min month: ");
-	a.tm_mon = myClamp(atoi(gets(inputLine)) - 1, 0, 11);
+	readLine(inputLine, sizeof(inputLine));
+	if (!parseIntInRange(inputLine, 1, 12, &parsed))
+		return;
+	a.tm_mon = parsed - 1;
 	
 	printf("\nEnter min day: ");
-	a.tm_mday = myClamp(atoi(gets(inputLine)), 1, 31);
+	readLine(inputLine, sizeof(inputLine));
+	if (!parseIntInRange(inputLine, 1, 31, &parsed))
+		return;
+	a.tm_mday = parsed;
 	
 	printf("\nEnter min hour: ");
-	a.tm_hour = myClamp(atoi(gets(inputLine)), 0, 23);
+	readLine(inputLine, sizeof(inputLine));
+	if (!parseIntInRange(inputLine, 0, 23, &parsed))
+		return;
+	a.tm_hour = parsed;
 	
 	printf("\nEnter min minute: ");
-	a.tm_min = myClamp(atoi(gets(inputLine)), 0, 59);
+	readLine(inputLine, sizeof(inputLine));
+	if (!parseIntInRange(inputLine, 0, 59, &parsed))
+		return;
+	a.tm_min = parsed;
 	
 	a.tm_sec = 0;
 	
 
 	printf("\n\nEnter max year: ");
-	b.tm_year = atoi(gets(inputLine)) - 1900;
+	readLine(inputLine, sizeof(inputLine));
+	if (!parseIntInRange(inputLine, 1900, 9999, &parsed))
+		return;
+	b.tm_year = parsed - 1900;
 	
 	printf("\nEnter max month: ");
-	b.tm_mon = myClamp(atoi(gets(inputLine)) - 1, 0, 11);
+	readLine(inputLine, sizeof(inputLine));
+	if (!parseIntInRange(inputLine, 1, 12, &parsed))
+		return;
+	b.tm_mon = parsed - 1;
 	
 	printf("\nEnter max day: ");
-	b.tm_mday = myClamp(atoi(gets(inputLine)), 1, 31);
+	readLine(inputLine, sizeof(inputLine));
+	if (!parseIntInRange(inputLine, 1, 31, &parsed))
+		return;
+	b.tm_mday = parsed;
 	
 	printf("\nEnter max hour: ");
-	b.tm_hour = myClamp(atoi(gets(inputLine)), 0, 23);
+	readLine(inputLine, sizeof(inputLine));
+	if (!parseIntInRange(inputLine, 0, 23, &parsed))
+		return;
+	b.tm_hour = parsed;
 	
 	printf("\nEnter max minute: ");
-	b.tm_min = myClamp(atoi(gets(inputLine)), 0, 59);
+	readLine(inputLine, sizeof(inputLine));
+	if (!parseIntInRange(inputLine, 0, 59, &parsed))
+		return;
+	b.tm_min = parsed;
 	
 	b.tm_sec = 59;
 
@@ -625,7 +692,9 @@ void characterRestore()
 		columnPrintf(80, '-', "");
 
 		printf("\n\n\nEnter Selection: ");
-		selection = atoi(gets(inputLine));
+		readLine(inputLine, sizeof(inputLine));
+		if (!parseIntInRange(inputLine, 1, 6, &selection))
+			selection = 0;
 
 		switch (selection)
 		{
