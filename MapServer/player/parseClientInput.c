@@ -142,9 +142,28 @@
 #include "AccountInventory.h"
 #include "AccountTypes.h"
 #include "league.h"
+#include "packet_schema_validation.h"
 
 
 extern U32 frame_count;
+
+static U32 s_parse_client_input_packet_reject_events = 0;
+
+static int parseClientInputValidateSchemaString(const char *value, const PacketSchemaStringDesc *desc, const char *context, int cmd_num)
+{
+	if (packetSchemaValidateString(value, desc))
+		return 1;
+
+	++s_parse_client_input_packet_reject_events;
+	LOG_OLD_ERR("security.packet_reject subsystem=parseClientInput context=%s cmd=%d field=%s max_len=%d charset=%d rejects=%u\n",
+		context ? context : "unknown",
+		cmd_num,
+		desc && desc->field_name ? desc->field_name : "unknown",
+		desc ? desc->max_len : -1,
+		desc ? desc->charset : -1,
+		s_parse_client_input_packet_reject_events);
+	return 0;
+}
 
 #define NUM_IDS     ( 1 )
 
@@ -3571,9 +3590,12 @@ int parseClientInput( Packet *pak, ClientLink *client )
 			}
 			xcase CLIENTINP_MISSIONSERVER_REPORTARC:
 			{
+				static const PacketSchemaStringDesc reportCommentSchema = { "report_comment", 512, PACKET_SCHEMA_CHARSET_ASCII_PRINTABLE, 1 };
 				int arcid = pktGetBitsAuto(pak);
 				int type = pktGetBitsAuto(pak);
 				char *comment = pktGetString(pak);
+				if (!parseClientInputValidateSchemaString(comment, &reportCommentSchema, "missionserver_report_arc", CLIENTINP_MISSIONSERVER_REPORTARC))
+					break;
 				if( e && !entIsTrial(e) )
 				{
 					if( type == kComplaint_BanMessage && !e->access_level )
@@ -3584,8 +3606,11 @@ int parseClientInput( Packet *pak, ClientLink *client )
 			}
 			xcase CLIENTINP_MISSIONSERVER_SEARCHPAGE:
 			{
+				static const PacketSchemaStringDesc searchContextSchema = { "search_context", 256, PACKET_SCHEMA_CHARSET_ASCII_PRINTABLE, 1 };
 				MissionSearchPage category = pktGetBitsAuto(pak);
 				char *context = pktGetString(pak);
+				if (!parseClientInputValidateSchemaString(context, &searchContextSchema, "missionserver_search_page", CLIENTINP_MISSIONSERVER_SEARCHPAGE))
+					break;
 				int  page = pktGetBitsAuto(pak);
 				int viewedFilter = pktGetBitsAuto(pak);
 				int levelFilter = pktGetBitsAuto(pak);
@@ -3615,8 +3640,11 @@ int parseClientInput( Packet *pak, ClientLink *client )
 			}
 			xcase CLIENTINP_MISSIONSERVER_COMMENT:
 			{
+				static const PacketSchemaStringDesc arcCommentSchema = { "arc_comment", 512, PACKET_SCHEMA_CHARSET_ASCII_PRINTABLE, 1 };
 				int arcid = pktGetBitsAuto(pak);
 				char *msg = pktGetString(pak);
+				if (!parseClientInputValidateSchemaString(msg, &arcCommentSchema, "missionserver_comment", CLIENTINP_MISSIONSERVER_COMMENT))
+					break;
 
 				if(e && e->pl && !entIsTrial(e) )
 					missionserver_map_comment(e, arcid, localizedPrintf( e, "AuthorSentYouAComment", e->pl->chat_handle[0]?e->pl->chat_handle:e->name, msg) );
@@ -3644,8 +3672,12 @@ int parseClientInput( Packet *pak, ClientLink *client )
 					sendCostumeChangeEmoteList(e);
 			xcase CLIENTINP_DO_PROMOTE:
 			{
+				static const PacketSchemaStringDesc promoteTargetSchema = { "promote_target", 63, PACKET_SCHEMA_CHARSET_ASCII_NO_QUOTES, 0 };
 				char promotedPlayerName[64];
-				strncpyt(promotedPlayerName, pktGetString(pak), sizeof(promotedPlayerName));
+				const char *promoteNameFromPkt = pktGetString(pak);
+				if (!parseClientInputValidateSchemaString(promoteNameFromPkt, &promoteTargetSchema, "do_promote", CLIENTINP_DO_PROMOTE))
+					break;
+				strncpyt(promotedPlayerName, promoteNameFromPkt, sizeof(promotedPlayerName));
 				if (e)
 				{
 					int result = 0;

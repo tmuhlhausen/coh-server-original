@@ -12,6 +12,7 @@
 
 ClientLink ** admin_clients;	// list of all connected ChatAdmins
 ClientLink * admin_upload;		// ChatAdmin that is currently being sent full channel/user info
+static U32 s_chatadmin_packet_rejects = 0;
 
 
 bool adminUserOnline(User * user)
@@ -44,6 +45,8 @@ int adminHandleClientMsg(Packet *pak,int cmd, NetLink *link)
 			}
 			else
 			{
+				++s_chatadmin_packet_rejects;
+				LOG_OLD_ERR("security.packet_reject subsystem=chat_admin context=connect field=protocol expected=%d got=%d rejects=%u\n", CHATADMIN_PROTOCOL_VERSION, protocol, s_chatadmin_packet_rejects);
 				pkt2 = pktCreateEx(link, SHARDCOMM_SVR_BAD_PROTOCOL);
 				pktSendBits(pkt2, 32, CHATADMIN_PROTOCOL_VERSION);
 				pktSend(&pkt2, link);
