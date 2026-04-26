@@ -52,15 +52,17 @@ public :
     // Creates a new stoFileOSFile or stoFileCryptFile and attempts to open it.
     // Both the plaintext and encrypted filenames will be checked for existence
     // (unless a null value is passed in for one or both of the filenames), and if
-    // both exist, a warning will be logged, with the plaintext version of the file
-    // being opened and returned to the caller.  Similarly, if neither file exists,
-    // a warning will be logged.  Each type of warning can be disabled independently
-    // of the other.  Note that the user is responsible for deallocation of the
-    // stoFileOSFile returned by this function.
+    // both exist, a warning will be logged. By default the encrypted version is
+    // opened to avoid downgrade-to-plaintext risk; callers can explicitly enable
+    // plaintext fallback (migration mode) by passing allowPlaintextFallback=true.
+    // Similarly, if neither file exists, a warning will be logged.  Each type of
+    // warning can be disabled independently of the other.  Note that the user is
+    // responsible for deallocation of the stoFileOSFile returned by this function.
     static stoFileOSFile* OpenPlaintextOrEncryptedFile(
         const char *plaintextFilename, const char *encryptedFilename, 
         const unsigned char *key, const uint keyLength, 
-        bool warnIfBothFilesExist = true, bool warnIfNeitherFileExists = true);
+        bool warnIfBothFilesExist = true, bool warnIfNeitherFileExists = true,
+        bool allowPlaintextFallback = false);
 
 private :
 

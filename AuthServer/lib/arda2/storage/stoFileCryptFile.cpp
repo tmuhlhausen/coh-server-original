@@ -76,27 +76,41 @@ errResult stoFileCryptFile::Write(const void* buffer, size_t size)
 
 stoFileOSFile* stoFileCryptFile::OpenPlaintextOrEncryptedFile(const char *plaintextFilename, const char *encryptedFilename, 
                                                               const unsigned char *key, const uint keyLength, 
-                                                              bool warnIfBothFilesExist, bool warnIfNeitherFileExists)
+                                                              bool warnIfBothFilesExist, bool warnIfNeitherFileExists,
+                                                              bool allowPlaintextFallback)
 {
     stoFileOSFile *returnFile = 0;
 
     bool plaintextExists = stoFileUtils::FileExists(plaintextFilename);
     bool encryptedExists = stoFileUtils::FileExists(encryptedFilename);
 
-    if (plaintextExists)
+    // Threat model: if both files exist and plaintext is chosen implicitly, an attacker
+    // can force a downgrade by planting/retaining stale plaintext next to encrypted data.
+    // Therefore encrypted content is preferred by default, and plaintext is only selected
+    // when explicitly requested for migration/compatibility mode.
+    if (encryptedExists)
+    {
+        if (plaintextExists && allowPlaintextFallback)
+        {
+            returnFile = new stoFileOSFile();
+            returnFile->Open(plaintextFilename, stoFileOSFile::kAccessRead);
+        }
+        else
+        {
+            returnFile = new stoFileCryptFile();
+            static_cast<stoFileCryptFile*>(returnFile)->Open(encryptedFilename, stoFileOSFile::kAccessRead, key, keyLength);
+        }
+
+        if (plaintextExists && warnIfBothFilesExist)
+        {
+            ERR_REPORTV( ES_Warning, ("Both file %s and file %s exist. Using %s (encrypted preferred by default).",
+                                      plaintextFilename, encryptedFilename, allowPlaintextFallback ? plaintextFilename : encryptedFilename));
+        }
+    }
+    else if (plaintextExists)
     {
         returnFile = new stoFileOSFile();
         returnFile->Open(plaintextFilename, stoFileOSFile::kAccessRead);
-
-        if (encryptedExists && warnIfBothFilesExist)
-        {
-            ERR_REPORTV( ES_Warning, ("Both file %s and file %s exist. Using %s.", plaintextFilename, encryptedFilename, plaintextFilename));
-        }
-    }
-    else if (encryptedExists)
-    {
-        returnFile = new stoFileCryptFile();
-        static_cast<stoFileCryptFile*>(returnFile)->Open(encryptedFilename, stoFileOSFile::kAccessRead, key, keyLength);
     }
     else if (warnIfNeitherFileExists)
     {
