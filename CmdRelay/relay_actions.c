@@ -11,6 +11,7 @@
 #include "sysutil.h"
 #include "file.h"
 #include "EString.h"
+#include "cmd_dispatcher.h"
 
 extern CmdRelayCmdStatus g_status;
 extern int g_relayType;  // whether this is a DBSERVER, ARENASERVER, or MAPSERVER relay
@@ -582,10 +583,9 @@ BOOL onExecuteBatchFile(char * commandStr)
 // execute a custom shell command in the background worker thread
 BOOL onExecuteCustomCommand(char * commandStr)
 {
-//	int res;
-//	int i=0;
 	char params[10000];
-//	SHELLEXECUTEINFO ShellInfo;
+	char typedErr[256] = {0};
+	char legacyErr[256] = {0};
 
 	if(!strcmp(commandStr, ""))
 	{
@@ -593,10 +593,49 @@ BOOL onExecuteCustomCommand(char * commandStr)
 		return FALSE;
 	}
 
-	sprintf(params, "/C \"%s\"", commandStr);		// must surround entire command in quotes
-	printf("Executing custom command '%s'...\n", params);
 	SetStatus(CMDRELAY_CMDSTATUS_CUSTOM_CMD, 0);
 
+	if (strnicmp(commandStr, "typed:", 6) == 0)
+	{
+		const char *typedBody = commandStr + 6;
+		char typedLocal[10000];
+		char *argv[64];
+		const char *argvConst[64];
+		char *cursor = 0;
+		int argc;
+		int i;
+		char exeName[2000];
+
+		if (!DispatchTypedCustomCommand(typedBody, typedErr, sizeof(typedErr)))
+		{
+			SetError(typedErr);
+			return FALSE;
+		}
+
+		strncpyt(typedLocal, typedBody, sizeof(typedLocal));
+		argc = tokenize_line_quoted_safe(typedLocal, argv, ARRAY_SIZE(argv), &cursor);
+		for (i = 1; i < argc; ++i)
+			argvConst[i - 1] = argv[i];
+
+		if (!BuildWindowsCommandLine(argvConst, argc - 1, params, sizeof(params)))
+		{
+			SetError("Typed command is too long");
+			return FALSE;
+		}
+
+		strncpyt(exeName, argv[1], sizeof(exeName));
+		printf("Executing typed custom command: %s\n", params);
+		return startProcessAndWait(exeName, params);
+	}
+
+	if (!ValidateLegacyCommandStrict(commandStr, legacyErr, sizeof(legacyErr)))
+	{
+		SetError(legacyErr);
+		return FALSE;
+	}
+
+	sprintf(params, "/V:OFF /C \"%s\"", commandStr);		// legacy compatibility shim with strict escaping
+	printf("Executing legacy custom command with strict escaping '%s'...\n", params);
 	return startProcessAndWait("cmd.exe", params);
 
 	//// run the updater
