@@ -2102,8 +2102,10 @@ void teamlogEcho(const char* s, ...)
 	char buf[MEMLOG_LINE_WIDTH+10];
 
 	va_start(ap, s);
-	if (vsprintf(buf,s,ap) < 10) return;
+	_vsnprintf(buf, sizeof(buf)-1, s, ap);
+	buf[sizeof(buf)-1] = '\0';
 	va_end(ap);
+	if (strlen(buf) < 10) return;
 
 	//printf("%s\n", buf+9); // HACK - get past memlog thread id
 	printf("%s\n", buf);
