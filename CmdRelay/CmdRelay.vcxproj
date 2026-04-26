@@ -45,12 +45,15 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="cmd_dispatcher.c" />
+    <ClCompile Include="cmd_dispatcher_fuzz_test.c" />
     <ClCompile Include="kill_process.c" />
     <ClCompile Include="relay_actions.c" />
     <ClCompile Include="relay_main.c" />
     <ClCompile Include="relay_util.c" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="cmd_dispatcher.h" />
     <ClInclude Include="kill_process.h" />
     <ClInclude Include="relay_actions.h" />
     <ClInclude Include="relay_types.h" />

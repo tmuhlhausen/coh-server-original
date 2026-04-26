@@ -11,6 +11,12 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="cmd_dispatcher.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="cmd_dispatcher_fuzz_test.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="kill_process.c">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -25,6 +31,9 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="cmd_dispatcher.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="kill_process.h">
       <Filter>Header Files</Filter>
     </ClInclude>
