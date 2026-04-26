@@ -2587,10 +2587,10 @@ void chatCommand( Cmd * cmd, ClientLink *client, char* str )
 					if (!sgroup_hasPermission(e, (cmd->num == CMD_SUPERGROUP_PROMOTE ? SG_PERM_PROMOTE : SG_PERM_DEMOTE)))
 						break;
 
-					sprintf( buf, "promote_long %i %i %i %i \"%s\"", e->supergroup_id, sgroup_rank(e, e->db_id), (cmd->num == CMD_SUPERGROUP_PROMOTE)?1:-1, e->db_id, player_name );
+					sprintf( buf, "promote_long %i %i %i %i \"%s\"", e->supergroup_id, sgroup_rank(e, e->db_id), (cmd->num == CMD_SUPERGROUP_PROMOTE)?1:-1, e->db_id, escapeString(player_name) );
 				}
 				else
-					sprintf( buf, "csr_promote_long %i %i %i %i \"%s\"", e->supergroup_id, sgroup_rank(e, e->db_id), (cmd->num == CMD_SUPERGROUP_PROMOTE)?1:-1, e->db_id, player_name );
+					sprintf( buf, "csr_promote_long %i %i %i %i \"%s\"", e->supergroup_id, sgroup_rank(e, e->db_id), (cmd->num == CMD_SUPERGROUP_PROMOTE)?1:-1, e->db_id, escapeString(player_name) );
 
 				serverParseClient( buf, NULL );
 				sgroup_getStats(e);
