@@ -2,6 +2,10 @@
 #include <stdio.h>
 #include <process.h>
 #include <time.h>
+#include <fcntl.h>
+#include <io.h>
+#include <share.h>
+#include <sys/stat.h>
 #include "utils.h"
 #include "EArray.h"
 #include "sock.h"
@@ -239,12 +243,51 @@ static void crPrintHeader(DeletionHeader *header)
 	columnPrintf(15, ' ', header->ipAddress);
 }
 
+static int crCreateRestoreTempFile(char *filename, size_t filenameCount, FILE **outFile)
+{
+	char tempDir[MAX_PATH];
+	char tempTemplate[MAX_PATH];
+	int fd = -1;
+	int i;
+
+	if (!filename || !outFile || filenameCount == 0)
+		return 1;
+
+	*outFile = NULL;
+	tempDir[0] = 0;
+	strcpy_s(SAFESTR(tempDir), fileTempDir());
+
+	for (i = 0; i < 100; i++)
+	{
+		unsigned int rnd = (unsigned int)rand();
+		sprintf_s(SAFESTR(tempTemplate), "%s\\restoretemp_%08x_%02d.txt", tempDir, rnd, i);
+
+		if (_sopen_s(&fd, tempTemplate, _O_CREAT|_O_EXCL|_O_RDWR|_O_BINARY, _SH_DENYRW, _S_IREAD|_S_IWRITE) == 0)
+		{
+			FILE *f = _fdopen(fd, "wt");
+			if (!f)
+			{
+				_close(fd);
+				unlink(tempTemplate);
+				return 1;
+			}
+
+			strcpy_s(filename, filenameCount, tempTemplate);
+			*outFile = f;
+			return 0;
+		}
+	}
+
+	return 1;
+}
+
 static void crRestoreCharacter(DeletionHeader *header)
 {
 	int ret;
 	char inputLine[100];
-	char *filename = "C:/restoretemp.txt";
-	FILE *f;
+	char filename[MAX_PATH];
+	FILE *f = NULL;
+	int tempFileCreated = 0;
 
 	printf("\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n");
 	consoleSetColor(COLOR_GREEN|COLOR_BRIGHT, 0);
@@ -258,23 +301,26 @@ static void crRestoreCharacter(DeletionHeader *header)
 	if (inputLine[0] == 0)
 		return;
 
-	f = fopen(filename, "wt");
-	if (f)
+	ret = 1;
+	if (crCreateRestoreTempFile(filename, ARRAY_SIZE(filename), &f) == 0)
 	{
-		fprintf(f, unescapeString(header->data));
+		tempFileCreated = 1;
+		fputs(unescapeString(header->data), f);
 		fclose(f);
+		f = NULL;
 
 		ret = dbQueryPutCharacter(filename);
 	}
-	else
-		ret = 1;
 
 	if (ret != 0)
 		crErrorMessage("Error restoring character!");
 	else
 		crErrorMessage("Character restored!");
 
-	unlink(filename);
+	if (f)
+		fclose(f);
+	if (tempFileCreated)
+		unlink(filename);
 }
 
 static void crHandleFindResults(DeletionHeader **results)
