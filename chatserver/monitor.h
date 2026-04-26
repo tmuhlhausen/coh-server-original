@@ -7,6 +7,12 @@
 typedef struct
 {
 	NetLink	*link;
+	int		authenticated;
+	int		role;
+	U32		session_nonce;
+	int		rate_window_start;
+	int		sensitive_cmd_count;
+	int		audit_denied_count;
 
 } MonitorLink;
 
