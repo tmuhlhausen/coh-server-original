@@ -46,6 +46,30 @@ static void crErrorMessage(const char *msg)
 	getch();
 }
 
+static int crBuildRolloverFilename(char *buffer, size_t bufferSize, const char *prefix, int fileNumber)
+{
+	int written;
+
+	if (!buffer || !prefix || bufferSize == 0 || fileNumber < 1)
+		return 0;
+
+	written = snprintf(buffer, bufferSize, "%s_%d.log.gz", prefix, fileNumber);
+	return (written >= 0 && written < (int)bufferSize);
+}
+
+static int crValidateRolloverFilenameGeneration(void)
+{
+	char rolloverName[MAX_PATH];
+
+	if (!crBuildRolloverFilename(rolloverName, sizeof(rolloverName), "deletion", 7))
+		return 0;
+
+	if (stricmp(rolloverName, "deletion_7.log.gz") != 0)
+		return 0;
+
+	return !crBuildRolloverFilename(rolloverName, 8, "deletion", 123456);
+}
+
 static int readLine(char* buf, size_t len)
 {
 	size_t inputLen;
@@ -450,8 +474,32 @@ static DeletionLog *crOpenDeletionLogByFilename(char *filename)
 	char buf[MAX_PATH];
 	char fnamePrefix[MAX_PATH];
 	int filenum = 1;
+	size_t filenameLen;
 
-	strcpy(fnamePrefix, filename);
+	if (!filename || !filename[0])
+	{
+		crErrorMessage("No deletion log filename provided.");
+		return NULL;
+	}
+
+	if (!crValidateRolloverFilenameGeneration())
+	{
+		crErrorMessage("Internal rollover filename validation failed.");
+		return NULL;
+	}
+
+	filenameLen = strlen(filename);
+	if (filenameLen >= sizeof(fnamePrefix))
+	{
+		crErrorMessage("Deletion log path is too long. Please use a shorter path.");
+		return NULL;
+	}
+
+	if (strncpy_s(fnamePrefix, sizeof(fnamePrefix), filename, _TRUNCATE) != 0)
+	{
+		crErrorMessage("Failed to copy deletion log path safely.");
+		return NULL;
+	}
 	if (strEndsWith(fnamePrefix, ".log.gz"))
 		fnamePrefix[strlen(fnamePrefix)-7] = 0;
 
@@ -481,7 +529,11 @@ static DeletionLog *crOpenDeletionLogByFilename(char *filename)
 		free(filedata);
 
 		// rollover filenames:
-		sprintf(buf, "%s_%d.log.gz",fnamePrefix,filenum++);
+		if (!crBuildRolloverFilename(buf, sizeof(buf), fnamePrefix, filenum++))
+		{
+			crErrorMessage("Rollover deletion log filename is too long; stopping log scan.");
+			break;
+		}
 		filedata = fileAllocEx_dbg(buf, &filesize, "rbz", 0 MEM_DBG_PARMS_INIT);
 		fileposition = 0;
 	} while (filedata);
