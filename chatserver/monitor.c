@@ -13,6 +13,7 @@
 #include "log.h"
 #include "chatsqldb.h"
 #include "crypt.h"
+#include "packet_schema_validation.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -26,6 +27,22 @@ extern NetLinkList	net_links;
 
 #define MONITOR_RATE_WINDOW_SECONDS	10
 #define MONITOR_RATE_LIMIT_SENSITIVE	8
+static U32 s_monitor_packet_rejects = 0;
+
+static int monitorValidateSchemaString(const char *value, const PacketSchemaStringDesc *desc, const char *context)
+{
+	if (packetSchemaValidateString(value, desc))
+		return 1;
+
+	++s_monitor_packet_rejects;
+	LOG_OLD_ERR("security.packet_reject subsystem=chat_monitor context=%s field=%s max_len=%d charset=%d rejects=%u\n",
+		context ? context : "unknown",
+		desc && desc->field_name ? desc->field_name : "unknown",
+		desc ? desc->max_len : -1,
+		desc ? desc->charset : -1,
+		s_monitor_packet_rejects);
+	return 0;
+}
 
 static void monitorDropLink(NetLink *link, const char *reason)
 {
@@ -158,10 +175,16 @@ int handleMonitorMsg(Packet *pak,int cmd, NetLink *link)
 	{
 		xcase SVRMONTOCHATSVR_CONNECT:
 			{
+				static const PacketSchemaStringDesc handshakeMacSchema = { "handshake_mac", 40, PACKET_SCHEMA_CHARSET_ASCII_PRINTABLE, 0 };
  				int protocol = pktGetBits(pak, 32);
 				U32 nonce = pktGetBits(pak, 32);
 				int role = pktGetBitsPack(pak, 2);
 				const char *mac_hex = pktGetString(pak);
+				if (!monitorValidateSchemaString(mac_hex, &handshakeMacSchema, "connect"))
+				{
+					monitorDropLink(link, "invalid handshake schema");
+					return 0;
+				}
  				if(protocol != CHATMON_PROTOCOL_VERSION)
 				{
 					Packet * pkt2 = pktCreateEx(link, CHATMON_PROTOCOL_MISMATCH);
@@ -189,24 +212,44 @@ int handleMonitorMsg(Packet *pak,int cmd, NetLink *link)
 			}
 			break;
 		xcase SVRMONTOCHATSVR_ADMIN_SENDALL:
-			if (client->role != MONITOR_ROLE_PRIVILEGED)
 			{
-				client->audit_denied_count++;
-				LOG_OLD_ERR("monitor_security: denied broadcast cmd from %s:%d role=%d denied_count=%d\n", makeIpStr(link->addr.sin_addr.S_un.S_addr), link->addr.sin_port, client->role, client->audit_denied_count);
-				monitorDropLink(link, "unauthorized broadcast command");
-				return 0;
+				static const PacketSchemaStringDesc broadcastSchema = { "broadcast_message", 1024, PACKET_SCHEMA_CHARSET_ASCII_PRINTABLE, 0 };
+				const char *broadcast = 0;
+				if (client->role != MONITOR_ROLE_PRIVILEGED)
+				{
+					client->audit_denied_count++;
+					LOG_OLD_ERR("monitor_security: denied broadcast cmd from %s:%d role=%d denied_count=%d\n", makeIpStr(link->addr.sin_addr.S_un.S_addr), link->addr.sin_port, client->role, client->audit_denied_count);
+					monitorDropLink(link, "unauthorized broadcast command");
+					return 0;
+				}
+				broadcast = pktGetString(pak);
+				if (!monitorValidateSchemaString(broadcast, &broadcastSchema, "admin_sendall"))
+				{
+					monitorDropLink(link, "invalid broadcast schema");
+					return 0;
+				}
+				csrSendAllAnon((char*)broadcast);
 			}
-			csrSendAllAnon(pktGetString(pak));
 			break;
 		xcase SVRMONTOCHATSVR_SHUTDOWN:
-			if (client->role != MONITOR_ROLE_PRIVILEGED)
 			{
-				client->audit_denied_count++;
-				LOG_OLD_ERR("monitor_security: denied shutdown cmd from %s:%d role=%d denied_count=%d\n", makeIpStr(link->addr.sin_addr.S_un.S_addr), link->addr.sin_port, client->role, client->audit_denied_count);
-				monitorDropLink(link, "unauthorized shutdown command");
-				return 0;
+				static const PacketSchemaStringDesc shutdownReasonSchema = { "shutdown_reason", 256, PACKET_SCHEMA_CHARSET_ASCII_PRINTABLE, 1 };
+				const char *shutdownReason = 0;
+				if (client->role != MONITOR_ROLE_PRIVILEGED)
+				{
+					client->audit_denied_count++;
+					LOG_OLD_ERR("monitor_security: denied shutdown cmd from %s:%d role=%d denied_count=%d\n", makeIpStr(link->addr.sin_addr.S_un.S_addr), link->addr.sin_port, client->role, client->audit_denied_count);
+					monitorDropLink(link, "unauthorized shutdown command");
+					return 0;
+				}
+				shutdownReason = pktGetString(pak);
+				if (!monitorValidateSchemaString(shutdownReason, &shutdownReasonSchema, "shutdown"))
+				{
+					monitorDropLink(link, "invalid shutdown schema");
+					return 0;
+				}
+				chatServerShutdown(0,(char*)shutdownReason);
 			}
-			chatServerShutdown(0,pktGetString(pak));
 			break;
 		default:
 			LOG_OLD_ERR("monitor_errs: Unknown command %d\n",cmd);

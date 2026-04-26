@@ -55,6 +55,7 @@
 #include "arenamapserver.h"
 #include "account/AccountCatalog.h"
 #include "character_inventory.h"
+#include "packet_schema_validation.h"
 
 #if defined (SERVER) && !defined(DBQUERY)
 #include "AccountInventory.h"
@@ -94,6 +95,22 @@ int num_relay_cmds=0;
 bool log_relay_cmds=false;
 static U32 s_pkt_string_copy_truncation_events = 0;
 static U32 s_pkt_string_copy_rejection_events = 0;
+static U32 s_packet_schema_reject_events = 0;
+
+static int dbcommValidateSchemaString(const char *value, const PacketSchemaStringDesc *desc, const char *context)
+{
+	if (packetSchemaValidateString(value, desc))
+		return 1;
+
+	++s_packet_schema_reject_events;
+	LOG_OLD_ERR("security.packet_reject subsystem=dbcomm context=%s field=%s max_len=%d charset=%d total_rejects=%u\n",
+		context ? context : "unknown",
+		desc && desc->field_name ? desc->field_name : "unknown",
+		desc ? desc->max_len : -1,
+		desc ? desc->charset : -1,
+		s_packet_schema_reject_events);
+	return 0;
+}
 
 #if defined(SERVER) && !defined(DBQUERY) // auction on mapservers only
 	static void cacheAccountServerCatalogUpdate( Packet* pak_in );
@@ -755,9 +772,12 @@ static int relayValidateCommand(const char *msg, char **reasonOut)
 
 void handleRelayCmd(Packet *pak)
 {
+	static const PacketSchemaStringDesc relayMsgSchema = { "relay_message", 2048, PACKET_SCHEMA_CHARSET_ASCII_PRINTABLE, 0 };
 	char *rejectReason = 0;
 	int hardeningEnabled = relayHardeningEnabled();
 	char *msg = pktGetString(pak);
+	if (!dbcommValidateSchemaString(msg, &relayMsgSchema, "handleRelayCmd"))
+		return;
 
 	num_relay_cmds++;
 	//if (log_relay_cmds) // uncomment this once I've debugged the command that causing the crash
@@ -1241,8 +1261,11 @@ void handleSgChannelInvite(Packet *pak)
 static handleReceiveZMQstatus(Packet *pak)
 {
 	#if defined(SERVER) && !defined(DBQUERY)
+		static const PacketSchemaStringDesc zmqStatusSchema = { "zmq_status", 512, PACKET_SCHEMA_CHARSET_ASCII_PRINTABLE, 0 };
 		U32 db_id = pktGetBitsAuto(pak);
 		char* statusString = pktGetString(pak);
+		if (!dbcommValidateSchemaString(statusString, &zmqStatusSchema, "handleReceiveZMQstatus"))
+			return;
 		Entity* e = entFromDbId(db_id);
 		ClientLink* client;
 		if ( e && (( client = clientFromEnt(e)) != NULL )) 
