@@ -10,6 +10,7 @@
 #include "serverMonitorNet.h"
 #include "serverMonitorCmdRelay.h"
 #include "chatMonitor.h"
+#include <time.h>
 
 
 static bool g_listenThreadRunning=false;
@@ -230,9 +231,207 @@ typedef struct QueuedCommand {
 } QueuedCommand;
 static QueuedCommand* g_commandQueueHead = NULL;
 
-static QueuedCommand* queueCommand(char* buf, SOCKET s, ServerStats* pCurStats)
+typedef enum CommandRole
 {
-	// We only accept a single argument (space separated), anything after the first arg is 
+	eCmdRole_None = 0,
+	eCmdRole_Monitor,
+	eCmdRole_Admin
+} CommandRole;
+
+typedef struct CommandSession
+{
+	bool authenticated;
+	CommandRole role;
+	char sessionNonce[64];
+} CommandSession;
+
+typedef struct RateLimitEntry
+{
+	U32 ip;
+	int windowStart;
+	int attempts;
+} RateLimitEntry;
+
+#define MAX_RATE_LIMIT_ENTRIES 128
+#define COMMAND_ATTEMPT_WINDOW_SECS 60
+#define MAX_PRIVILEGED_ATTEMPTS_PER_WINDOW 20
+static RateLimitEntry s_rateLimitEntries[MAX_RATE_LIMIT_ENTRIES];
+static int s_rateLimitInitialized = 0;
+
+static U32 fnv1aHashStr(const char *str)
+{
+	U32 hash = 2166136261U;
+	unsigned char c;
+	while ((c = (unsigned char)*str++) != 0)
+	{
+		hash ^= c;
+		hash *= 16777619U;
+	}
+	return hash;
+}
+
+static void formatHexU32(char *out, size_t outSize, U32 value)
+{
+	snprintf(out, outSize, "%08x", value);
+}
+
+static CommandRole parseRole(const char *roleText)
+{
+	if (!roleText || !roleText[0])
+		return eCmdRole_None;
+	if (!strcmpi(roleText, "admin"))
+		return eCmdRole_Admin;
+	if (!strcmpi(roleText, "monitor"))
+		return eCmdRole_Monitor;
+	return eCmdRole_None;
+}
+
+static CommandRole getRequiredRoleForCommand(CommandID cmdID)
+{
+	switch (cmdID)
+	{
+		case eCmdID_SendAdminMessage:
+		case eCmdID_KillLauncher:
+		case eCmdID_StartLauncher:
+		case eCmdID_KillMapservers:
+		case eCmdID_ShutdownDBserver:
+		case eCmdID_ResetMissionLink:
+			return eCmdRole_Admin;
+		case eCmdID_StartDBserver:
+		case eCmdID_ConnectChat:
+		case eCmdID_EnableAutoDelink:
+		case eCmdID_DelinkStuckMS:
+		case eCmdID_ReloadConfig:
+		case eCmdID_SendOverloadProtection:
+			return eCmdRole_Monitor;
+		default:
+			return eCmdRole_None;
+	}
+}
+
+static bool roleAllowsCommand(CommandRole callerRole, CommandID cmdID)
+{
+	CommandRole required = getRequiredRoleForCommand(cmdID);
+	return callerRole >= required;
+}
+
+static RateLimitEntry* getRateLimitEntry(U32 ip, int now)
+{
+	int i;
+	int openIndex = -1;
+	if (!s_rateLimitInitialized)
+	{
+		memset(s_rateLimitEntries, 0, sizeof(s_rateLimitEntries));
+		s_rateLimitInitialized = 1;
+	}
+
+	for (i = 0; i < MAX_RATE_LIMIT_ENTRIES; ++i)
+	{
+		if (s_rateLimitEntries[i].ip == ip)
+			return &s_rateLimitEntries[i];
+		if (openIndex < 0 && s_rateLimitEntries[i].ip == 0)
+			openIndex = i;
+	}
+
+	if (openIndex < 0)
+		openIndex = now % MAX_RATE_LIMIT_ENTRIES;
+	s_rateLimitEntries[openIndex].ip = ip;
+	s_rateLimitEntries[openIndex].windowStart = now;
+	s_rateLimitEntries[openIndex].attempts = 0;
+	return &s_rateLimitEntries[openIndex];
+}
+
+static bool isRateLimited(U32 ip)
+{
+	RateLimitEntry *entry;
+	int now = (int)time(NULL);
+	if (ip == 0)
+		return false;
+
+	entry = getRateLimitEntry(ip, now);
+	if (now - entry->windowStart >= COMMAND_ATTEMPT_WINDOW_SECS)
+	{
+		entry->windowStart = now;
+		entry->attempts = 0;
+	}
+	entry->attempts++;
+	if (entry->attempts > MAX_PRIVILEGED_ATTEMPTS_PER_WINDOW)
+	{
+		printf("ALERT: Rate limit exceeded for privileged command attempts from ip=%u (attempts=%d window=%ds)\n",
+			ip, entry->attempts, COMMAND_ATTEMPT_WINDOW_SECS);
+		return true;
+	}
+	return false;
+}
+
+static bool verifySignedText(const char *text, const char *sigHex)
+{
+	char signedInput[2048];
+	char expectedSig[16];
+	const char *secret = getenv("SVRMON_CMD_SECRET");
+	U32 hash;
+
+	if (!secret || !secret[0] || !text || !sigHex || !sigHex[0])
+		return false;
+
+	snprintf(signedInput, sizeof(signedInput), "%s|%s", secret, text);
+	hash = fnv1aHashStr(signedInput);
+	formatHexU32(expectedSig, sizeof(expectedSig), hash);
+	return (strcmpi(expectedSig, sigHex) == 0);
+}
+
+static bool authenticateSession(const char *args, CommandSession *session, SOCKET s, U32 sourceIp)
+{
+	char roleText[64] = {0};
+	char nonce[64] = {0};
+	char sigHex[64] = {0};
+	long ts = 0;
+	char signedText[256];
+	int skew;
+	char response[256];
+
+	if (!args || sscanf(args, "%63s %ld %63s %63s", roleText, &ts, nonce, sigHex) != 4)
+	{
+		snprintf(response, sizeof(response), "ERROR: auth_session invalid args\n");
+		send(s, response, (int)strlen(response), 0);
+		return false;
+	}
+
+	skew = abs((int)(time(NULL) - ts));
+	if (skew > 300)
+	{
+		snprintf(response, sizeof(response), "ERROR: auth_session rejected due to timestamp skew (%d)\n", skew);
+		send(s, response, (int)strlen(response), 0);
+		return false;
+	}
+
+	snprintf(signedText, sizeof(signedText), "auth|%s|%ld|%s", roleText, ts, nonce);
+	if (!verifySignedText(signedText, sigHex))
+	{
+		snprintf(response, sizeof(response), "ERROR: auth_session bad signature\n");
+		send(s, response, (int)strlen(response), 0);
+		printf("ALERT: Signature verification failed during auth_session from ip=%u\n", sourceIp);
+		return false;
+	}
+
+	session->role = parseRole(roleText);
+	if (session->role == eCmdRole_None)
+	{
+		snprintf(response, sizeof(response), "ERROR: auth_session invalid role\n");
+		send(s, response, (int)strlen(response), 0);
+		return false;
+	}
+	session->authenticated = true;
+	strncpy(session->sessionNonce, nonce, sizeof(session->sessionNonce));
+	session->sessionNonce[sizeof(session->sessionNonce) - 1] = 0;
+	snprintf(response, sizeof(response), "SUCCESS: authenticated role=%s\n", roleText);
+	send(s, response, (int)strlen(response), 0);
+	return true;
+}
+
+static QueuedCommand* queueCommand(char* buf, SOCKET s, ServerStats* pCurStats, CommandSession *session, U32 sourceIp)
+{
+	// We only accept a single argument (space separated), anything after the first arg is
 	//	considered all one string.
 	int len, i;
 	CommandID cmdID = eCmdID_Unknown;
@@ -240,11 +439,41 @@ static QueuedCommand* queueCommand(char* buf, SOCKET s, ServerStats* pCurStats)
 	char response[1024];
 	char *pCmdText = buf;
 	char* pArgs = strchr(buf, ' ');
+	char* pSig = NULL;
+	char signedText[2048];
 	if(pArgs) {
 		*pArgs = 0; // null terminate command
 		pArgs++;
 	} else {
 		pArgs = ""; // svrMonSendDbMessage requires to pass empty sring for args, not null
+	}
+	pSig = strstr(pArgs, " sig=");
+
+	if (!session->authenticated)
+	{
+		snprintf(response, sizeof(response), "ERROR: command rejected; auth_session required first\n");
+		send(s, response, (int)strlen(response), 0);
+		printf("ALERT: Unauthenticated privileged command attempt from ip=%u cmd=%s\n", sourceIp, pCmdText);
+		return NULL;
+	}
+
+	if (!pSig)
+	{
+		snprintf(response, sizeof(response), "ERROR: command rejected; missing signature\n");
+		send(s, response, (int)strlen(response), 0);
+		printf("ALERT: Unsigned privileged command attempt from ip=%u cmd=%s\n", sourceIp, pCmdText);
+		return NULL;
+	}
+
+	*pSig = 0;
+	pSig += 5; // skip " sig="
+	snprintf(signedText, sizeof(signedText), "%s|%s|%s", session->sessionNonce, pCmdText, pArgs);
+	if (!verifySignedText(signedText, pSig))
+	{
+		snprintf(response, sizeof(response), "ERROR: command rejected; signature invalid\n");
+		send(s, response, (int)strlen(response), 0);
+		printf("ALERT: Bad command signature from ip=%u cmd=%s\n", sourceIp, pCmdText);
+		return NULL;
 	}
 
 	for(i=0; i<eCmdID_NumCommands; i++)
@@ -260,6 +489,13 @@ static QueuedCommand* queueCommand(char* buf, SOCKET s, ServerStats* pCurStats)
 	if( cmdID != eCmdID_Unknown )
 	{
 		char extraInfo[1024];
+		if (!roleAllowsCommand(session->role, cmdID))
+		{
+			snprintf(response, sizeof(response), "ERROR: role is not authorized for command \"%s\"\n", pCmdText);
+			send(s, response, (int)strlen(response), 0);
+			printf("ALERT: Unauthorized role attempt from ip=%u cmd=%s role=%d\n", sourceIp, pCmdText, session->role);
+			return NULL;
+		}
 
 		// add command to our linked list of queued commands
 		len = sizeof(QueuedCommand) + (int)strlen(pArgs) + 1;
@@ -334,14 +570,19 @@ static DWORD WINAPI commandThreadMain(void *data)
 	do {
 		SOCKET s2;
 		struct linger l = {1, 15};
+		struct sockaddr_in remoteAddr;
+		int remoteLen = sizeof(remoteAddr);
+		U32 sourceIp = 0;
 		int total_read = 0, cur_cmd_read = 0;
 		char buf[MAX_CMD_LEN+1], *cur_cmd_buf;
 		QueuedCommand* pCommandsThisMessage_Head = NULL, *pCommandsThisMessage_Tail = NULL;
 		ServerStats curStats;
+		CommandSession session = {0};
 
-		s2 = accept(s, NULL, NULL);
+		s2 = accept(s, (struct sockaddr*)&remoteAddr, &remoteLen);
 		if (s2==INVALID_SOCKET)
 			continue;
+		sourceIp = ntohl(remoteAddr.sin_addr.S_un.S_addr);
 
 		EnterCriticalSection(&g_commandThreadCS);
 		memcpy( &curStats, &g_currentStats_commandThread, sizeof(ServerStats) ); // copy to local var for use below
@@ -381,7 +622,24 @@ static DWORD WINAPI commandThreadMain(void *data)
 				{
 					// create command and store in local queue (will move to master queue after get all 
 					//	commands in this message)
-					QueuedCommand* pcmd = queueCommand(cur_cmd_buf, s2, &curStats);
+					if (isRateLimited(sourceIp))
+					{
+						const char *rateLimitedResp = "ERROR: command rejected; rate limit exceeded\n";
+						send(s2, rateLimitedResp, (int)strlen(rateLimitedResp), 0);
+						pCommandsThisMessage_Head = NULL;
+						pCommandsThisMessage_Tail = NULL;
+						break;
+					}
+
+					if (!strnicmp(cur_cmd_buf, "auth_session ", 13))
+					{
+						authenticateSession(cur_cmd_buf + 13, &session, s2, sourceIp);
+						cur_cmd_buf = &buf[total_read];
+						cur_cmd_read = 0;
+						continue;
+					}
+
+					QueuedCommand* pcmd = queueCommand(cur_cmd_buf, s2, &curStats, &session, sourceIp);
 					if(pcmd) {
 						if( !pCommandsThisMessage_Head ) {
 							pCommandsThisMessage_Head = pCommandsThisMessage_Tail = pcmd;
