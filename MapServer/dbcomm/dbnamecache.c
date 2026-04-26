@@ -84,7 +84,11 @@ void handleSendEntNames(Packet *pak)
 	for(i=0;i<container_name_count;i++)
 	{
 		container_names[i].id = pktGetBitsPack(pak,1);
-		strcpy(container_names[i].name,unescapeString(pktGetString(pak)));
+		{
+			char nameBuf[sizeof(container_names[i].name)];
+			copyPktStringSafe(nameBuf, sizeof(nameBuf), pak);
+			strncpyt(container_names[i].name, unescapeString(nameBuf), sizeof(container_names[i].name));
+		}
 		container_names[i].gender = pktGetBitsPack(pak,3);
 		container_names[i].name_gender = pktGetBitsPack(pak,3);
 		container_names[i].playerType = pktGetBitsPack(pak,1);
@@ -114,7 +118,7 @@ void handleSendGroupNames(Packet *pak)
 	for(i=0;i<container_name_count;i++)
 	{
 		container_names[i].id = pktGetBitsPack(pak,1);
-		strcpy(container_names[i].name,pktGetString(pak));
+		copyPktStringSafe(container_names[i].name, sizeof(container_names[i].name), pak);
 		if (list_id == CONTAINER_SUPERGROUPS)
 		{
 			if (!stashIntFindPointer(sg_id_hashes, container_names[i].id, NULL))
