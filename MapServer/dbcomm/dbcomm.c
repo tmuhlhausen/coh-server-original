@@ -89,6 +89,8 @@ DBCommState db_state = {-1,1};
 bool disconnected_from_dbserver=false; // Set to true when we manually disconnect to prevent sending of delink messages after we have disconnected
 int num_relay_cmds=0;
 bool log_relay_cmds=false;
+static U32 s_pkt_string_copy_truncation_events = 0;
+static U32 s_pkt_string_copy_rejection_events = 0;
 
 #if defined(SERVER) && !defined(DBQUERY) // auction on mapservers only
 	static void cacheAccountServerCatalogUpdate( Packet* pak_in );
@@ -107,6 +109,37 @@ static DataCallback *data_callbacks;
 static int data_callback_count,data_callback_max;
 
 int relay_response_succeeded, relay_response_map_id;
+
+int copyPktStringSafe(char *dst, size_t dstsz, Packet *pak)
+{
+	const char *src;
+	size_t srcLen;
+
+	if (!dst || !dstsz || !pak)
+	{
+		++s_pkt_string_copy_rejection_events;
+		return 0;
+	}
+
+	src = pktGetString(pak);
+	if (!src)
+	{
+		dst[0] = 0;
+		++s_pkt_string_copy_rejection_events;
+		return 0;
+	}
+
+	srcLen = strlen(src);
+	if (srcLen >= dstsz)
+	{
+		strncpyt(dst, src, dstsz);
+		++s_pkt_string_copy_truncation_events;
+		return 0;
+	}
+
+	strncpyt(dst, src, dstsz);
+	return 1;
+}
 
 int dbProcessDataCallback(int cookie,int data)
 {
@@ -469,7 +502,7 @@ void handleShutdown(Packet *pak)
 		return;
 
 	terminal = pktGetBitsPack(pak,1);
-	strcpy(msg,pktGetString(pak));
+	copyPktStringSafe(msg, ARRAY_SIZE(msg), pak);
 	returnAllPlayers(terminal,msg);
 }
 
@@ -514,7 +547,7 @@ void handleRelayCmdResponse(Packet *pak)
 int handleClientCmdFailed(Packet *pak)
 {
 	last_db_error_code = pktGetBitsPack(pak,1);
-	strcpy(last_db_error,pktGetString(pak));
+	copyPktStringSafe(last_db_error, ARRAY_SIZE(last_db_error), pak);
 	LOG( LOG_ERROR, LOG_LEVEL_VERBOSE, 0, "handleClientCmdFailed: %s\n",last_db_error);
 	if (last_db_error_code == CONTAINER_ERR_CANT_COMPLETE_SERIOUS)
 	{

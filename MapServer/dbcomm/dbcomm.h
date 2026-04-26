@@ -1,6 +1,7 @@
 #ifndef _DBCOMM_H
 #define _DBCOMM_H
 
+#include <stddef.h>
 #include "network\netio.h"
 #include "dbcontainer.h"
 
@@ -88,6 +89,7 @@ void handleRelayCmd(Packet *pak);
 int handleClientCmdFailed(Packet *pak);
 void handleCustomData(Packet *pak);
 int dbMessageCallback(Packet *pak,int cmd,NetLink *link);
+int copyPktStringSafe(char *dst, size_t dstsz, Packet *pak);
 void dbSendSaveCmd(void);
 void dbSendPlayerDisconnect(int db_id, int logout, int logout_login);
 U32 dbSecondsSince2000(void);
