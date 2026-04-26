@@ -17,8 +17,12 @@
 #include "estring.h"
 #include "servercfg.h"
 #include "log.h"
+#include "safe_str.h"
 #include <zmq.h>
 #include "zeromqSocket.h"
+
+#define SAFE_STR_BAN_UNSAFE_APIS
+#include "unsafe_api_ban.h"
 
 #define MAX_CLIENTS 1000
 NetLinkList		log_links;
@@ -279,7 +283,7 @@ void updateLogServerTitle()
 	timerStart(timer);
 	if(shard_comm.connected)
 	{
-		sprintf(buf,
+		format_checked(buf, sizeof(buf),
 		"LogServer   Chat %s/%s (MSG %.0f/%.0f)",
 		printUnit(buf2, pktRate(&shard_comm.sendHistory)),
 		printUnit(buf3, pktRate(&shard_comm.recvHistory)),
@@ -289,7 +293,7 @@ void updateLogServerTitle()
 	}
 	else
 	{
-		strcpy(buf, "LogServer");
+		copy_checked(buf, sizeof(buf), "LogServer");
 	}
 	setConsoleTitle(buf);
 

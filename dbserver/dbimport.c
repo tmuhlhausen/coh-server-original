@@ -8,6 +8,7 @@
 #include "container_merge.h"
 #include "memcheck.h"
 #include "namecache.h"
+#include "safe_str.h"
 
 static FILE *mappingfile;
 static FILE *brokenfile;
@@ -281,11 +282,11 @@ void importDump(int argc,char **argv)
 	}
 
 	if (argv[0][0] == '.' || strstr(argv[0],":")) //do we look like an absolute path?
-		strcpy(basename,argv[0]);
+		copy_checked(basename, sizeof(basename), argv[0]);
 	else
-		sprintf(basename,"./%s",argv[0]); //to keep filealloc from trying to read it from data
+		format_checked(basename, sizeof(basename), "./%s", argv[0]); //to keep filealloc from trying to read it from data
 
-	strcpy(filename,basename);
+	copy_checked(filename, sizeof(filename), basename);
 
 	if (argc > 1)
 		mappingfile = fopen(argv[1],"a+");

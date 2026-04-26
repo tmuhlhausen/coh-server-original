@@ -617,6 +617,7 @@
       <DebugInformationFormat Condition="'$(Configuration)|$(Platform)'=='Release|x64'">ProgramDatabase</DebugInformationFormat>
     </ClCompile>
     <ClCompile Include="utils\StringUtil.c" />
+    <ClCompile Include="utils\safe_str.c" />
     <ClCompile Include="utils\structDefines.c" />
     <ClCompile Include="utils\structHist.c" />
     <ClCompile Include="utils\structInternals.c" />
@@ -1680,6 +1681,7 @@
     <ClInclude Include="utils\Stackdump.h" />
     <ClInclude Include="utils\strings_opt.h" />
     <ClInclude Include="utils\StringUtil.h" />
+    <ClInclude Include="utils\safe_str.h" />
     <ClInclude Include="utils\structDefines.h" />
     <ClInclude Include="utils\structHist.h" />
     <ClInclude Include="utils\structInternals.h" />
@@ -1693,6 +1695,7 @@
     <ClInclude Include="utils\tga.h" />
     <ClInclude Include="utils\threadedFileCopy.h" />
     <ClInclude Include="utils\tiff.h" />
+    <ClInclude Include="utils\unsafe_api_ban.h" />
     <ClInclude Include="utils\timing.h" />
     <ClInclude Include="utils\tokenstore.h" />
     <ClInclude Include="utils\UnitSpec.h" />
