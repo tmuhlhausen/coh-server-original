@@ -25,11 +25,11 @@
  * (Prior to 0.9.5a beta1, a different scheme was used: MMNNFFRBB for
  *  major minor fix final patch/beta)
  */
-#define OPENSSL_VERSION_NUMBER	0x009080bfL
+#define OPENSSL_VERSION_NUMBER	0x1010117fL
 #ifdef OPENSSL_FIPS
-#define OPENSSL_VERSION_TEXT	"OpenSSL 0.9.8k-fips 25 Mar 2009"
+#define OPENSSL_VERSION_TEXT	"OpenSSL 1.1.1w-fips 11 Sep 2023"
 #else
-#define OPENSSL_VERSION_TEXT	"OpenSSL 0.9.8k 25 Mar 2009"
+#define OPENSSL_VERSION_TEXT	"OpenSSL 1.1.1w 11 Sep 2023"
 #endif
 #define OPENSSL_VERSION_PTEXT	" part of " OPENSSL_VERSION_TEXT
 
@@ -83,7 +83,7 @@
  * should only keep the versions that are binary compatible with the current.
  */
 #define SHLIB_VERSION_HISTORY ""
-#define SHLIB_VERSION_NUMBER "0.9.8"
+#define SHLIB_VERSION_NUMBER "1.1.1"
 
 
 #endif /* HEADER_OPENSSLV_H */
