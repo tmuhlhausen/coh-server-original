@@ -16,66 +16,276 @@ purpose:	extension of stoFileOSFile that encrypts/decrypts files
 #include "./stoFileCryptFile.h"
 #include "arda2/storage/stoFileUtils.h"
 
-stoFileCryptFile::stoFileCryptFile()
+#include <algorithm>
+#include <cstring>
+
+#include "openssl/evp.h"
+#include "openssl/rand.h"
+
+namespace
 {
-    this->m_key = 0;
-    this->m_blockNum = 0;
-    for (int i = 0; i < 8; ++i)
-        this->m_initVector[i] = 0;
+    static const unsigned char kMagic[] = { 'S', 'C', 'F', '2' };
+    static const unsigned char kHeaderVersion = 1;
+    static const unsigned char kAlgorithmAes256Gcm = 1;
+    static const unsigned char kNonceLength = 12;
+    static const unsigned char kTagLength = 16;
+
+    struct ScopedEvpCipherCtx
+    {
+        ScopedEvpCipherCtx() : m_ctx(EVP_CIPHER_CTX_new()) {}
+        ~ScopedEvpCipherCtx() { if (m_ctx) EVP_CIPHER_CTX_free(m_ctx); }
+        EVP_CIPHER_CTX *m_ctx;
+    };
+
+    bool CryptAes256Gcm(const std::vector<unsigned char> &key,
+                        const unsigned char *nonce,
+                        const std::vector<unsigned char> &input,
+                        std::vector<unsigned char> &output,
+                        unsigned char *tag,
+                        bool encrypt)
+    {
+        ScopedEvpCipherCtx ctx;
+        if (!ctx.m_ctx)
+            return false;
+
+        if (EVP_CipherInit_ex(ctx.m_ctx, EVP_aes_256_gcm(), 0, 0, 0, encrypt ? 1 : 0) != 1)
+            return false;
+        if (EVP_CIPHER_CTX_ctrl(ctx.m_ctx, EVP_CTRL_GCM_SET_IVLEN, kNonceLength, 0) != 1)
+            return false;
+        if (EVP_CipherInit_ex(ctx.m_ctx, 0, 0, &key[0], nonce, -1) != 1)
+            return false;
+
+        output.resize(input.size());
+        int outLen = 0;
+        if (!input.empty() && EVP_CipherUpdate(ctx.m_ctx, &output[0], &outLen, &input[0], (int)input.size()) != 1)
+            return false;
+
+        int finalLen = 0;
+        if (encrypt)
+        {
+            if (EVP_CipherFinal_ex(ctx.m_ctx, output.empty() ? 0 : (&output[0] + outLen), &finalLen) != 1)
+                return false;
+            if (EVP_CIPHER_CTX_ctrl(ctx.m_ctx, EVP_CTRL_GCM_GET_TAG, kTagLength, tag) != 1)
+                return false;
+        }
+        else
+        {
+            if (EVP_CIPHER_CTX_ctrl(ctx.m_ctx, EVP_CTRL_GCM_SET_TAG, kTagLength, tag) != 1)
+                return false;
+            if (EVP_CipherFinal_ex(ctx.m_ctx, output.empty() ? 0 : (&output[0] + outLen), &finalLen) != 1)
+                return false;
+        }
+
+        output.resize((size_t)(outLen + finalLen));
+        return true;
+    }
+
+    bool DecryptLegacyBlowfishCfb(const std::vector<unsigned char> &key,
+                                  const std::vector<unsigned char> &ciphertext,
+                                  std::vector<unsigned char> &plaintext)
+    {
+        ScopedEvpCipherCtx ctx;
+        if (!ctx.m_ctx)
+            return false;
+
+        unsigned char iv[8] = { 0 };
+        if (EVP_DecryptInit_ex(ctx.m_ctx, EVP_bf_cfb64(), 0, &key[0], iv) != 1)
+            return false;
+
+        plaintext.resize(ciphertext.size());
+        int outLen = 0;
+        if (!ciphertext.empty() && EVP_DecryptUpdate(ctx.m_ctx, &plaintext[0], &outLen, &ciphertext[0], (int)ciphertext.size()) != 1)
+            return false;
+
+        int finalLen = 0;
+        if (EVP_DecryptFinal_ex(ctx.m_ctx, plaintext.empty() ? 0 : (&plaintext[0] + outLen), &finalLen) != 1)
+            return false;
+
+        plaintext.resize((size_t)(outLen + finalLen));
+        return true;
+    }
+}
+
+stoFileCryptFile::stoFileCryptFile() :
+    m_readOffset(0),
+    m_mode(kAccessNone),
+    m_isNewFormat(false),
+    m_readInitialized(false),
+    m_writeFinalized(false)
+{
 }
 
 stoFileCryptFile::~stoFileCryptFile()
 {
-    if (this->m_key)
-        delete this->m_key;
+    if (CanWrite())
+        FinalizeWriteBuffer();
 }
 
 errResult stoFileCryptFile::Open(const char* filename, AccessMode mode, const unsigned char *key, uint keyLength)
 {
+    if ((key == 0) || (keyLength == 0) || (keyLength > stoFileCryptFile::MAX_KEY_LENGTH))
+        return ER_Failure;
+
     if (stoFileOSFile::Open(filename, mode) == ER_Failure)
         return ER_Failure;
 
-    if (keyLength > stoFileCryptFile::MAX_KEY_LENGTH)
+    m_mode = mode;
+    m_isNewFormat = false;
+    m_readInitialized = false;
+    m_writeFinalized = false;
+    m_readOffset = 0;
+    m_readBuffer.clear();
+    m_writeBuffer.clear();
+
+    m_key.assign(32, 0);
+    std::memcpy(&m_key[0], key, keyLength);
+
+    return ER_Success;
+}
+
+errResult stoFileCryptFile::Close()
+{
+    if (CanWrite())
+    {
+        if (ISERROR(FinalizeWriteBuffer()))
+            return ER_Failure;
+    }
+
+    return stoFileOSFile::Close();
+}
+
+errResult stoFileCryptFile::InitializeReadBuffer()
+{
+    if (m_readInitialized)
+        return ER_Success;
+
+    const int encryptedSize = stoFileOSFile::GetSize();
+    if (encryptedSize < 0)
         return ER_Failure;
 
-    if (this->m_key)
-        delete this->m_key;
-    this->m_key = new BF_KEY();
-    BF_set_key(this->m_key, keyLength, key);
+    std::vector<unsigned char> encrypted((size_t)encryptedSize);
+    if (!encrypted.empty() && ISERROR(stoFileOSFile::Read(&encrypted[0], encrypted.size())))
+        return ER_Failure;
 
-    for (int i = 0; i < 8; ++i)
-        this->m_initVector[i] = 0;
+    m_readBuffer.clear();
+    m_isNewFormat = false;
 
+    const size_t minHeaderSize = sizeof(kMagic) + 4;
+    if (encrypted.size() >= minHeaderSize && std::memcmp(&encrypted[0], kMagic, sizeof(kMagic)) == 0)
+    {
+        const unsigned char version = encrypted[4];
+        const unsigned char algorithm = encrypted[5];
+        const unsigned char nonceLen = encrypted[6];
+        const unsigned char tagLen = encrypted[7];
+
+        if (version != kHeaderVersion || algorithm != kAlgorithmAes256Gcm || nonceLen != kNonceLength || tagLen != kTagLength)
+            return ER_Failure;
+
+        const size_t headerSize = minHeaderSize + nonceLen;
+        if (encrypted.size() < headerSize + tagLen)
+            return ER_Failure;
+
+        const unsigned char *nonce = &encrypted[minHeaderSize];
+        const unsigned char *tag = &encrypted[encrypted.size() - tagLen];
+
+        std::vector<unsigned char> ciphertext(encrypted.begin() + headerSize, encrypted.end() - tagLen);
+        unsigned char mutableTag[kTagLength];
+        std::memcpy(mutableTag, tag, kTagLength);
+
+        if (!CryptAes256Gcm(m_key, nonce, ciphertext, m_readBuffer, mutableTag, false))
+            return ER_Failure;
+
+        m_isNewFormat = true;
+    }
+    else
+    {
+        if (!DecryptLegacyBlowfishCfb(m_key, encrypted, m_readBuffer))
+            return ER_Failure;
+    }
+
+    m_readOffset = 0;
+    m_readInitialized = true;
     return ER_Success;
 }
 
 errResult stoFileCryptFile::Read(void* buffer, size_t size)
 {
-    unsigned char *tempBuffer = new unsigned char[size];
+    if (ISERROR(InitializeReadBuffer()))
+        return ER_Failure;
 
-    errResult retVal = stoFileOSFile::Read(tempBuffer, size);
-    if (retVal == ER_Success)
-    {
-        BF_cfb64_encrypt(tempBuffer, (unsigned char*) buffer, (long)size, this->m_key, this->m_initVector, &this->m_blockNum, BF_DECRYPT);
-    }
+    if (m_readOffset + size > m_readBuffer.size())
+        return ER_Failure;
 
-    delete [] tempBuffer;
-    return retVal;
+    std::memcpy(buffer, &m_readBuffer[m_readOffset], size);
+    m_readOffset += size;
+    return ER_Success;
+}
+
+errResult stoFileCryptFile::FinalizeWriteBuffer()
+{
+    if (m_writeFinalized || !CanWrite())
+        return ER_Success;
+
+    unsigned char nonce[kNonceLength] = { 0 };
+    if (RAND_bytes(nonce, sizeof(nonce)) != 1)
+        return ER_Failure;
+
+    std::vector<unsigned char> ciphertext;
+    unsigned char tag[kTagLength] = { 0 };
+    if (!CryptAes256Gcm(m_key, nonce, m_writeBuffer, ciphertext, tag, true))
+        return ER_Failure;
+
+    std::vector<unsigned char> output;
+    output.reserve(sizeof(kMagic) + 4 + kNonceLength + ciphertext.size() + kTagLength);
+    output.insert(output.end(), kMagic, kMagic + sizeof(kMagic));
+    output.push_back(kHeaderVersion);
+    output.push_back(kAlgorithmAes256Gcm);
+    output.push_back(kNonceLength);
+    output.push_back(kTagLength);
+    output.insert(output.end(), nonce, nonce + kNonceLength);
+    output.insert(output.end(), ciphertext.begin(), ciphertext.end());
+    output.insert(output.end(), tag, tag + kTagLength);
+
+    if (ISERROR(stoFileOSFile::Write(&output[0], output.size())))
+        return ER_Failure;
+
+    m_writeFinalized = true;
+    return ER_Success;
 }
 
 errResult stoFileCryptFile::Write(const void* buffer, size_t size)
 {
-    unsigned char *tempBuffer = new unsigned char[size];
+    if (size == 0)
+        return ER_Success;
 
-    BF_cfb64_encrypt((const unsigned char*)buffer, tempBuffer, (long)size, this->m_key, this->m_initVector, &this->m_blockNum, BF_ENCRYPT);
-    errResult retVal = stoFileOSFile::Write(tempBuffer, size);
-
-    delete [] tempBuffer;
-    return retVal;
+    const unsigned char *begin = static_cast<const unsigned char*>(buffer);
+    m_writeBuffer.insert(m_writeBuffer.end(), begin, begin + size);
+    return ER_Success;
 }
 
-stoFileOSFile* stoFileCryptFile::OpenPlaintextOrEncryptedFile(const char *plaintextFilename, const char *encryptedFilename, 
-                                                              const unsigned char *key, const uint keyLength, 
+bool stoFileCryptFile::Eof() const
+{
+    if (!m_readInitialized)
+        return false;
+
+    return m_readOffset >= m_readBuffer.size();
+}
+
+int stoFileCryptFile::GetSize() const
+{
+    if (!m_readInitialized)
+        return 0;
+
+    return (int)m_readBuffer.size();
+}
+
+int stoFileCryptFile::Tell() const
+{
+    return (int)m_readOffset;
+}
+
+stoFileOSFile* stoFileCryptFile::OpenPlaintextOrEncryptedFile(const char *plaintextFilename, const char *encryptedFilename,
+                                                              const unsigned char *key, const uint keyLength,
                                                               bool warnIfBothFilesExist, bool warnIfNeitherFileExists)
 {
     stoFileOSFile *returnFile = 0;

@@ -17,10 +17,7 @@ purpose:	extension of stoFileOSFile that encrypts/decrypts files
 
 #include "arda2/storage/stoFileOSFile.h"
 
-
-// Note: The use of this class requires the linking of the openssl
-// library libeay32.lib in NIH/openssl/lib.
-#include "openssl/blowfish.h"
+#include <vector>
 
 class stoFileCryptFile : public stoFileOSFile
 {
@@ -31,6 +28,7 @@ public :
     virtual ~stoFileCryptFile();
 
     errResult Open(const char *filename, AccessMode mode, const unsigned char *key, uint keyLength);
+    errResult Close();
 
     // Seek - moves the file pointer to the specified offset
     virtual errResult Seek(int, SeekMode)
@@ -43,6 +41,10 @@ public :
 
     // Write - writes 'size' byte from the buffer into the file
     virtual errResult Write(const void* buffer, size_t size);
+
+    virtual bool Eof() const;
+    virtual int GetSize() const;
+    virtual int Tell() const;
 
     virtual bool CanSeek() const
     {
@@ -58,18 +60,25 @@ public :
     // of the other.  Note that the user is responsible for deallocation of the
     // stoFileOSFile returned by this function.
     static stoFileOSFile* OpenPlaintextOrEncryptedFile(
-        const char *plaintextFilename, const char *encryptedFilename, 
-        const unsigned char *key, const uint keyLength, 
+        const char *plaintextFilename, const char *encryptedFilename,
+        const unsigned char *key, const uint keyLength,
         bool warnIfBothFilesExist = true, bool warnIfNeitherFileExists = true);
 
 private :
 
-    static const uint MAX_KEY_LENGTH = 16;
+    static const uint MAX_KEY_LENGTH = 32;
 
-    BF_KEY *m_key;
-    unsigned char m_initVector[8];
-    int m_blockNum;
+    errResult InitializeReadBuffer();
+    errResult FinalizeWriteBuffer();
 
+    std::vector<unsigned char> m_key;
+    mutable size_t m_readOffset;
+    std::vector<unsigned char> m_readBuffer;
+    std::vector<unsigned char> m_writeBuffer;
+    AccessMode m_mode;
+    bool m_isNewFormat;
+    bool m_readInitialized;
+    bool m_writeFinalized;
 };
 
 #endif // #ifndef _INCLUDE_STOFILECRYPTFILE_H_
